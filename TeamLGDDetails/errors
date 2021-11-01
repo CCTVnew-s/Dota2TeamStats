@@ -1,0 +1,128 @@
+// Signal Simulator
+// Inputs: 1) Signal (keyed)  
+//         2) variance control factors  -- lambda diversity ; lambda imbalance
+//         3) scale control factors ----  qtl buy, qtl sell, slolpe
+//         4) adhoc enhancement factors (leave it empty for now)  ~  variance adjusted trade size; correlated trade adjust; total market participation control adjusted
+// Calibration or inputs:
+//         1) instrument level covariance
+//         2) variance based slope k (in the future)
+
+
+// 2.5 year signal needs 100G
+keyedsignal: select date,time,symbol,SeqNo,predrtn from xtest1; 
+
+// match signals to market
+xtest1
+
+// SOD prepartion, calibration part 
+// a. cov calibration, no need if you have it
+// b. qtls B-S calibration 
+
+// a. use half year adjusted cov, look forward half year
+
+getCorMatrix:{[allsymbol;baseprice;sd;ed;K]
+                 fulldays: exec distinct date from baseprice where date within(sd;ed);
+                 rtns: exec value fulldays#date!adjrtn by symbol from baseprice where symbol in  allsymbol, date within(sd;ed);
+                 covmatrix: allsymbol {[x;y;z;K]$[(0 = count z[x]) or (0 = count z[y]);:0n;::];$[(sum not null (z[x])+z[y]) > K; (z[x]) cov z[y]; 0n]}[;;rtns;K]/:\: allsymbol ;
+                 vardiag: .[covmatrix;] each (1 1) */: til count covmatrix;
+                 vardiag: (avg vardiag) ^ vardiag;
+                 vardiag: ?[vardiag>0.0001;vardiag;0.0001];
+                 corm: {[covmatrix;i;vardiag] ?[i = til count vardiag;1.0;covmatrix[i] % sqrt vardiag[i] * vardiag]}[covmatrix;;vardiag] each til count covmatrix;
+                 corlist: raze corm;
+                 qtl1: min corlist where 2 = 10 xrank corlist;
+                 qtl2: 0.3;
+                 transform: {[qtl1;x]  k: 0.2%(1.0 - qtl1); ?[not null x;max(?[x > 0.99999;1.0; 0.1 + (x - qtl1)*k];0);0n]};
+                 cormnew:   transform[qtl1;] each corm   ;            
+                 avgcor:0.4 * med med each cormnew;
+                 cormnew: { y ^ x}[;avgcor] each cormnew;
+                 :{[vardiag;cormnew;i]  (sqrt vardiag[i] * vardiag) *' cormnew[i]}[vardiag;cormnew;] each til count cormnew} ;
+
+ADJFACTORPATH: "/datassd/adjfactor.csv";
+getAdjFactor:{[path]
+             ls: read0 `$":",path;
+             header: `$ "," vs ls[0];
+             dls: ls _ 0 ;
+             t: ("SDFFF";",") 0: dls;
+             rtn: flip (header!t)};
+
+.util.adjfactor: getAdjFactor[ADJFACTORPATH];
+loadeddailydata: select from dailydata;
+
+getBasePrice:{[dailyohlc;adj]
+dailyohlcadj: (update symbol:sym from dailyohlc) lj  `date`symbol xkey ?[adj;();0b;`symbol`date`split`dividend`stkbonus!`symbol`exdate`split`div`stkbonus];
+rtnt: `symbol`date xasc select date,symbol,open,high,low,close,split,dividend from dailyohlcadj;
+rtnt: update preclose: 1 xprev close by symbol from rtnt;
+rtnt: update precloseadj: (preclose - 0 ^ dividend)% 1.0 ^ split, split: 1.0 ^ split, dividend: 0.0 ^ dividend from rtnt;
+update adjrtn: -1.0 + close%precloseadj from rtnt};
+
+baseprice: getBasePrice[loadeddailydata;.util.adjfactor];
+covuniverse: select distinct symbol by 6 xbar `month$date from xtest1;
+covuniverse: update sd:  "d"$date,  ed: 2021.06.30 ^ -1 + "d"$ -1 xprev date from covuniverse;
+covuniverse: () xkey covuniverse;
+covdic: (covuniverse`date) ! ({[x] (x`symbol;getCorMatrix[x`symbol;baseprice; x`sd;x`ed;40])} each covuniverse);
+getcovford:{[covdic;d] covdic[6 xbar `month$d]};
+
+//getcovford[covdic;2021.04.28]
+
+// b. qtls B-S calibration, previous 1 months qtls ,
+// interpolation? or fit Normal ?   intervals of interests?  3.0?  2.0%?  1.0? 0.5% or 0.2%  ~  issue for Sell ? we need further lower, to some well don't know, maybe even 10%
+// also , use quantile or use values?
+
+
+getqtlsdict:{[qtls;qtlstick;x]  
+             qtlstick: `$"bps" ,/: string `int$qtls*10000;
+             qtls10000: `int$ qtls * 10000;
+             qtls10000: 10000 - qtls10000;
+             qtlstick ! {min @[x;y]}[x group (10000 xrank x);] each qtls10000 } ;  
+
+getweightqtlsdict:{[qtls;qtlstick;x;weights]
+             totalweights: sum weights;
+             sortweights: weights iasc x;
+             sortweightsdict:  (til count x)! (sums sortweights);
+             qtlsweights: totalweights * (1 - qtls);
+             qtlstick!@[asc x;{[x;y] {min (key x) where value x} x > y}[sortweightsdict;] each qtlsweights]};
+
+sortweights where null sortweights
+
+qtlsB: 0.02 0.017 0.015 0.013 0.01 0.008 0.005;
+qtlsS: 0.99 0.98 0.97 0.96 0.95 0.94 0.93 0.92 0.91 0.9 0.8;
+qtls: qtlsS,qtlsB;
+qtlstick: `$"bps" ,/: string `int$qtls*10000;
+WEIGHTCAP:2.5e6;
+
+// this should be enough
+getrtnqtlford:{[xtest1;d;qtls]
+qtlstick: `$"bps" ,/: string `int$qtls*10000;
+rtnqtlnear:  exec qtlstick#getweightqtlsdict[qtls;qtlstick;predrtn + 0 ^ ?[predrtn>0;neg -1.0 + AskPrice1%mid; -1.0 + mid%BidPrice1 ] ;min(0.01 ^ ?[predrtn >0;AskVolume1*AskPrice1;BidVolume1*BidPrice1];WEIGHTCAP)] by date:date from xtest1 where date within((d - 31),d - 1) ,not null predrtn;
+winsoravg:{ M: min x where 9 = 10 xrank x; m: max x where 0 = 10 xrank x; avg x where x within(m, M)};
+() xkey ?[rtnqtlnear;();(enlist `agg)!enlist 1; qtlstick! {[x;f] (f;x)}[;winsoravg] each qtlstick]};
+
+// bsqtlDay: getrtnqtlford[xtest1;d;qtls];
+
+
+
+// Major loop, set up parameters, tick event process
+
+
+LambdaPorfolioVar:;
+LambdaBSImbalanceVar:;
+TradeSlopeK:1e7;
+BaseBuyQtl:
+BaseSellQtl:
+
+EmptySODPosition:([] symbol:enlist `; currentpos: 0; sellable: 0; lasttotalvolume:0);
+EmptyRtnTable: flip `symbol`time`SeqNo`BS`Quantity`predrtn`deltav1`deltav2`basertn`adjrtn`fartouch`intvalMktAllow`alreadytrade`TotalMktVol! enlist each(`;00:00:00.000;0j;1b;100;0.0;0.0;0.0;0.0;0.0;1000e;1000.0;100.0;0.0)
+
+
+
+d: 2019.01.02
+SODPosition:EmptySODPosition
+
+universeandcov: getcovford[covdic;d];
+symboluniverseford: universeandcov[0];
+covforda:universeandcov[1];
+todayposition: update symbol:symboluniverseford from  0 ^ @[`symbol xkey SODPosition;] each symboluniverseford; // suppose any stocks we should have it
+
+x: (todayposition;EmptyRtnTable;)
+
+row: xtest1[10000]
