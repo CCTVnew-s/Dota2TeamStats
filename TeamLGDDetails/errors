@@ -84,7 +84,7 @@ getweightqtlsdict:{[qtls;qtlstick;x;weights]
 
 sortweights where null sortweights
 
-qtlsB: 0.02 0.017 0.015 0.013 0.01 0.008 0.005;
+qtlsB: 0.1 0.05 0.02 0.017 0.015 0.013 0.01 0.008 0.005;
 qtlsS: 0.99 0.98 0.97 0.96 0.95 0.94 0.93 0.92 0.91 0.9 0.8;
 qtls: qtlsS,qtlsB;
 qtlstick: `$"bps" ,/: string `int$qtls*10000;
@@ -93,7 +93,7 @@ WEIGHTCAP:2.5e6;
 // this should be enough
 getrtnqtlford:{[xtest1;d;qtls]
 qtlstick: `$"bps" ,/: string `int$qtls*10000;
-rtnqtlnear:  exec qtlstick#getweightqtlsdict[qtls;qtlstick;predrtn + 0 ^ ?[predrtn>0;neg -1.0 + AskPrice1%mid; -1.0 + mid%BidPrice1 ] ;min(0.01 ^ ?[predrtn >0;AskVolume1*AskPrice1;BidVolume1*BidPrice1];WEIGHTCAP)] by date:date from xtest1 where date within((d - 31),d - 1) ,not null predrtn;
+rtnqtlnear:  exec qtlstick#getweightqtlsdict[qtls;qtlstick;predrtn;min(0.01 ^ ?[predrtn >0;AskVolume1*AskPrice1;BidVolume1*BidPrice1];WEIGHTCAP)] by date:date from xtest1 where date within((d - 31),d - 1) ,not null predrtn;
 winsoravg:{ M: min x where 9 = 10 xrank x; m: max x where 0 = 10 xrank x; avg x where x within(m, M)};
 () xkey ?[rtnqtlnear;();(enlist `agg)!enlist 1; qtlstick! {[x;f] (f;x)}[;winsoravg] each qtlstick]};
 
@@ -102,20 +102,76 @@ winsoravg:{ M: min x where 9 = 10 xrank x; m: max x where 0 = 10 xrank x; avg x 
 
 
 // Major loop, set up parameters, tick event process
+// Functions to achieve:   adjust for centration, adjust for B/S imbalance, get Volume ;  adjust for trade progress, adjust for spread
+
+// step 1 calibration of qtls first, qtls will be used for filter
+// step 2 filter mkt data matched signal, also find the moving mkt volume for the set
+// step 3 decide whether it's a start day , or start days
+// step 4 get component var delta, mkt imbalance delta
+// step 5 derive optimal from control, far touch avaiable, max trading quantity, max quota avaialbe sell and buy, spread too large
+
+getPreParedFilteredSigMatchforDay:{[xtest;d;bsqtlDay;FilterBuyQtl;FilterSellQtl]
+blimit: (flip bsqtlDay)[FilterBuyQtl][0];
+slimit: (flip bsqtlDay)[FilterSellQtl][0];
+xd: select from xtest1 where date = d, not null predrtn;
+xd: update mv15volume: 300 msum (TotalVolume - 0 ^ 1 xprev TotalVolume) * mid,mv30volume: 600 msum (TotalVolume - 0 ^ 1 xprev TotalVolume) * mid ,totalmarkettrade: (TotalVolume - 0 ^ 1 xprev TotalVolume) * mid by symbol from xd;
+xd: update totalmarkettrade: sums totalmarkettrade from `time`SeqNo xasc xd;
+:select from xd where (predrtn > blimit) or (predrtn < slimit)};
 
 
-LambdaPorfolioVar:;
-LambdaBSImbalanceVar:;
+// analytical functions
+
+PorfolioVarUnitDiff:{[covm;pos;iloc]
+                      deri1: 2*covm mmu pos;
+                      delta: (neg pos) + 1.0 * iloc = til count pos;
+                      k1: delta mmu deri1;
+                      k2: delta mmu covm mmu delta;
+                      :(k1;k2 - k1)};
+
+MarketImbalanceUnitDiff:{[tgtscale;imbalance;varmkt]
+                        :(2.0*varmkt*imbalance%tgtscale; varmkt)};
+
+
+// configx: `vark1`vark2`slope`mktvar`tgtscale`covmatrix!(1.0; 1.0 ;1e7 ;1.0; 1e7; covm)
+// return (succeedcond;actqty;idealqty;infK;infY,;deltavar1;deltav2)
+
+InferQty:{[adjbaseR;predR;pos;symboliloc;imbalance;currentscale;LV;configx]
+           kkvar1:  PorfolioVarUnitDiff[configx`covmatrix;pos;symboliloc];
+           kkvar2:  MarketImbalanceUnitDiff[configx`tgtscale;imbalance;configx`mktvar];
+           // K*x >= y
+           inferK: (1.0%configx`slope) + ((configx`vark1)*(kkvar1[1])%currentscale) + ((configx`vark2)*(kkvar2[1])%configx`tgtscale);
+           infery:  predR - adjbaseR + ((configx`vark1)*(kkvar1[0])) + ((configx`vark2)*(kkvar2[0]));
+           idealqty: infery%inferK;
+           idealqty:?[predR>0; max(0,idealqty); min(0,idealqty)]; // make sure buy sell make sens
+           actqty: min(abs idealqty,LV);
+           deltavar1: (kkvar1[0] + kkvar1[1]*(actqty%currentscale))*actqty%currentscale;
+           deltavar2: (kkvar2[0] + kkvar2[1]*(actqty%configx`tgtscale))* actqty%configx`tgtscale;
+           :$[inferK>0;(1b;actqty;idealqty;inferK;infery;deltavar1;deltavar2);(0b;actqty;idealqty;deltavar1;deltavar2)]};        
+
+
+
+LambdaPorfolioVar: 1.0;
+LambdaBSImbalanceVar: 1.0;
 TradeSlopeK:1e7;
-BaseBuyQtl:
-BaseSellQtl:
+BaseBuyQtl: `bps100;
+BaseSellQtl: `bps9800;
+FilterBuyQtl: `bps500;
+FilterSellQtl: `bps9000;
+TRADECAP: 2e6;
 
-EmptySODPosition:([] symbol:enlist `; currentpos: 0; sellable: 0; lasttotalvolume:0);
-EmptyRtnTable: flip `symbol`time`SeqNo`BS`Quantity`predrtn`deltav1`deltav2`basertn`adjrtn`fartouch`intvalMktAllow`alreadytrade`TotalMktVol! enlist each(`;00:00:00.000;0j;1b;100;0.0;0.0;0.0;0.0;0.0;1000e;1000.0;100.0;0.0)
+
+d: 2019.02.01
+bsqtlDay: getrtnqtlford[xtest1;d;qtls];
+getConnectUniverse[ConnectChangeTable;.z.d]
+xtestford: getPreParedFilteredSigMatchforDay[xtest1;d;bsqtlDay;FilterBuyQtl;FilterSellQtl];
+.Q.gc[]
 
 
+EmptySODPosition:([] symbol:enlist `; currentpos: 0; sellable: 0);
+EmptyRtnTable: flip `symbol`time`SeqNo`SucceedInf`BS`Quantity`IdealQty`predrtn`infK`infy`deltav1`deltav2`basertn`adjrtn`fartouch`intvalMktAllow`intalreadytrade`TotalMktVol! enlist each(`;00:00:00.000;0j;1b;1b;100.0;100.0;0.0;1.0;0.0;0.0;0.0;0.0;0.0;1000e;1000.0;100.0;0.0);
 
-d: 2019.01.02
+
+d: 2019.02.01
 SODPosition:EmptySODPosition
 
 universeandcov: getcovford[covdic;d];
@@ -123,6 +179,18 @@ symboluniverseford: universeandcov[0];
 covforda:universeandcov[1];
 todayposition: update symbol:symboluniverseford from  0 ^ @[`symbol xkey SODPosition;] each symboluniverseford; // suppose any stocks we should have it
 
-x: (todayposition;EmptyRtnTable;)
+x: (todayposition;EmptyRtnTable;Imbalance)
+row: xtestford[10000]
 
-row: xtest1[10000]
+
+configOfD: `vark1`vark2`slope`mktvar`tgtscale`covmatrix`symbols`noadjust`allowsell!(1.0; 1.0 ;1e7 ;1.0; 1e7; covforda; symboluniverseford;1b;0b)
+
+processRow:{[x;row;configOfD]
+// 
+
+
+
+
+
+}
+
