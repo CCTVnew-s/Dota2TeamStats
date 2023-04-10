@@ -1,196 +1,341 @@
-// Signal Simulator
-// Inputs: 1) Signal (keyed)  
-//         2) variance control factors  -- lambda diversity ; lambda imbalance
-//         3) scale control factors ----  qtl buy, qtl sell, slolpe
-//         4) adhoc enhancement factors (leave it empty for now)  ~  variance adjusted trade size; correlated trade adjust; total market participation control adjusted
-// Calibration or inputs:
-//         1) instrument level covariance
-//         2) variance based slope k (in the future)
+// Expand function
+expwjf:{[f;args;newname] 
+         (enlist f),args, newname};
 
+// Apply Function to Varianble in Certian Filters :    f( x ) where f1(c1), f2(c2), f3(c3)......
+// Extend to further variable cases:      f(x,y)  where f1(c1), f2(c2), f3(c3)......
+// So,   max you can parse [f;x;y;z;...;c1;c2;c3..;(f1;fi)]  Variable Nums + Constraints Nums <= 6
+       
+applyf1_1:{[f;constraints]
+ :{[f;x;x1;constraints]
+   loc:constraints[0][x1];
+   :f[x where loc]}[f;;;constraints]
+ };
+applyf1_2:{[f;constraints]
+:{[f;x;x1;x2;constraints]
+   loc:(constraints[0][x1]) and (constraints[1][x2]);
+   :f[x where loc]}[f;;;;constraints]
+ };
+applyf1_3:{[f;constraints]
+:{[f;x;x1;x2;x3 ;constraints]
+   loc:(constraints[0][x1]) and (constraints[1][x2]) and (constraints[2][x3]);
+   :f[x where loc]}[f;;;;;constraints]
+ };
 
-// 2.5 year signal needs 100G
-keyedsignal: select date,time,symbol,SeqNo,predrtn from xtest1; 
+// more 
+applyf2_1:{[f;constraints]
+:{[f;x;y; x1 ;constraints]
+   loc:(constraints[0][x1]);
+   :f[x where loc;y where loc]}[f;;;;constraints]
+ };
+applyf2_2:{[f;constraints]
+:{[f;x;y;x1;x2 ;constraints]
+   loc:(constraints[0][x1]) and (constraints[1][x2]);
+   :f[x where loc;y where loc]}[f;;;;;constraints]
+ };
+applyf2_3:{[f;constraints]
+:{[f;x;y;x1;x2 ;constraints]
+   loc:(constraints[0][x1]) and (constraints[1][x2]) and (constraints[2][x3]);
+   :f[x where loc;y where loc]}[f;;;;;;constraints]
+ };
+// 
+applyf3_1:{[f;constraints]
+:{[f;x;y;z;x1 ;constraints]
+   loc:(constraints[0][x1]);
+   :f[x where loc;y where loc;z where loc]}[f;;;;;constraints]
+ };
+applyf3_2:{[f;constraints]
+:{[f;x;y;z;x1;x2 ;constraints]
+   loc:(constraints[0][x1]) and (constraints[1][x2]);
+   :f[x where loc;y where loc;z where loc]}[f;;;;;;constraints]
+ };
+applyf3_2:{[f;constraints]
+:{[f;x;y;z;x1 ;constraints]
+   loc:(constraints[0][x1]) and (constraints[1][x2]) and (constraints[2][x3]);
+   :f[x where loc;y where loc;z where loc]}[f;;;;;;;constraints]
+ };
 
-// match signals to market
-xtest1
+applyf4_1:{[f;constraints]
+:{[f;x;y;z;w;x1 ;constraints]
+   loc:(constraints[0][x1]);
+   :f[x where loc;y where loc;z where loc;w where loc]}[f;;;;;;constraints]
+ };
 
-// SOD prepartion, calibration part 
-// a. cov calibration, no need if you have it
-// b. qtls B-S calibration 
+applyf4_2:{[f;constraints]
+:{[f;x;y;z;x1 ;constraints]
+   loc:(constraints[0][x1]) and (constraints[1][x2]);
+   :f[x where loc;y where loc;z where loc]}[f;;;;;;;constraints]
+ };
 
-// a. use half year adjusted cov, look forward half year
-
-getCorMatrix:{[allsymbol;baseprice;sd;ed;K]
-                 fulldays: exec distinct date from baseprice where date within(sd;ed);
-                 rtns: exec value fulldays#date!adjrtn by symbol from baseprice where symbol in  allsymbol, date within(sd;ed);
-                 covmatrix: allsymbol {[x;y;z;K]$[(0 = count z[x]) or (0 = count z[y]);:0n;::];$[(sum not null (z[x])+z[y]) > K; (z[x]) cov z[y]; 0n]}[;;rtns;K]/:\: allsymbol ;
-                 vardiag: .[covmatrix;] each (1 1) */: til count covmatrix;
-                 vardiag: (avg vardiag) ^ vardiag;
-                 vardiag: ?[vardiag>0.0001;vardiag;0.0001];
-                 corm: {[covmatrix;i;vardiag] ?[i = til count vardiag;1.0;covmatrix[i] % sqrt vardiag[i] * vardiag]}[covmatrix;;vardiag] each til count covmatrix;
-                 corlist: raze corm;
-                 qtl1: min corlist where 2 = 10 xrank corlist;
-                 qtl2: 0.3;
-                 transform: {[qtl1;x]  k: 0.2%(1.0 - qtl1); ?[not null x;max(?[x > 0.99999;1.0; 0.1 + (x - qtl1)*k];0);0n]};
-                 cormnew:   transform[qtl1;] each corm   ;            
-                 avgcor:0.4 * med med each cormnew;
-                 cormnew: { y ^ x}[;avgcor] each cormnew;
-                 :{[vardiag;cormnew;i]  (sqrt vardiag[i] * vardiag) *' cormnew[i]}[vardiag;cormnew;] each til count cormnew} ;
-
-ADJFACTORPATH: "/datassd/adjfactor.csv";
-getAdjFactor:{[path]
-             ls: read0 `$":",path;
-             header: `$ "," vs ls[0];
-             dls: ls _ 0 ;
-             t: ("SDFFF";",") 0: dls;
-             rtn: flip (header!t)};
-
-.util.adjfactor: getAdjFactor[ADJFACTORPATH];
-loadeddailydata: select from dailydata;
-
-getBasePrice:{[dailyohlc;adj]
-dailyohlcadj: (update symbol:sym from dailyohlc) lj  `date`symbol xkey ?[adj;();0b;`symbol`date`split`dividend`stkbonus!`symbol`exdate`split`div`stkbonus];
-rtnt: `symbol`date xasc select date,symbol,open,high,low,close,split,dividend from dailyohlcadj;
-rtnt: update preclose: 1 xprev close by symbol from rtnt;
-rtnt: update precloseadj: (preclose - 0 ^ dividend)% 1.0 ^ split, split: 1.0 ^ split, dividend: 0.0 ^ dividend from rtnt;
-update adjrtn: -1.0 + close%precloseadj from rtnt};
-
-baseprice: getBasePrice[loadeddailydata;.util.adjfactor];
-covuniverse: select distinct symbol by 6 xbar `month$date from xtest1;
-covuniverse: update sd:  "d"$date,  ed: 2021.06.30 ^ -1 + "d"$ -1 xprev date from covuniverse;
-covuniverse: () xkey covuniverse;
-covdic: (covuniverse`date) ! ({[x] (x`symbol;getCorMatrix[x`symbol;baseprice; x`sd;x`ed;40])} each covuniverse);
-getcovford:{[covdic;d] covdic[6 xbar `month$d]};
-
-//getcovford[covdic;2021.04.28]
-
-// b. qtls B-S calibration, previous 1 months qtls ,
-// interpolation? or fit Normal ?   intervals of interests?  3.0?  2.0%?  1.0? 0.5% or 0.2%  ~  issue for Sell ? we need further lower, to some well don't know, maybe even 10%
-// also , use quantile or use values?
-
-
-getqtlsdict:{[qtls;qtlstick;x]  
-             qtlstick: `$"bps" ,/: string `int$qtls*10000;
-             qtls10000: `int$ qtls * 10000;
-             qtls10000: 10000 - qtls10000;
-             qtlstick ! {min @[x;y]}[x group (10000 xrank x);] each qtls10000 } ;  
-
-getweightqtlsdict:{[qtls;qtlstick;x;weights]
-             totalweights: sum weights;
-             sortweights: weights iasc x;
-             sortweightsdict:  (til count x)! (sums sortweights);
-             qtlsweights: totalweights * (1 - qtls);
-             qtlstick!@[asc x;{[x;y] {min (key x) where value x} x > y}[sortweightsdict;] each qtlsweights]};
-
-sortweights where null sortweights
-
-qtlsB: 0.1 0.05 0.02 0.017 0.015 0.013 0.01 0.008 0.005;
-qtlsS: 0.99 0.98 0.97 0.96 0.95 0.94 0.93 0.92 0.91 0.9 0.8;
-qtls: qtlsS,qtlsB;
-qtlstick: `$"bps" ,/: string `int$qtls*10000;
-WEIGHTCAP:2.5e6;
-
-// this should be enough
-getrtnqtlford:{[xtest1;d;qtls]
-qtlstick: `$"bps" ,/: string `int$qtls*10000;
-rtnqtlnear:  exec qtlstick#getweightqtlsdict[qtls;qtlstick;predrtn;min(0.01 ^ ?[predrtn >0;AskVolume1*AskPrice1;BidVolume1*BidPrice1];WEIGHTCAP)] by date:date from xtest1 where date within((d - 31),d - 1) ,not null predrtn;
-winsoravg:{ M: min x where 9 = 10 xrank x; m: max x where 0 = 10 xrank x; avg x where x within(m, M)};
-() xkey ?[rtnqtlnear;();(enlist `agg)!enlist 1; qtlstick! {[x;f] (f;x)}[;winsoravg] each qtlstick]};
-
-// bsqtlDay: getrtnqtlford[xtest1;d;qtls];
+applyf5_1:{[f;constraints]
+:{[f;x;y;z;w;v;x1 ;constraints]
+   loc:(constraints[0][x1]);
+   :f[x where loc;y where loc;z where loc;w where loc;v where loc]}[f;;;;;;constraints]
+ };
 
 
 
-// Major loop, set up parameters, tick event process
-// Functions to achieve:   adjust for centration, adjust for B/S imbalance, get Volume ;  adjust for trade progress, adjust for spread
-
-// step 1 calibration of qtls first, qtls will be used for filter
-// step 2 filter mkt data matched signal, also find the moving mkt volume for the set
-// step 3 decide whether it's a start day , or start days
-// step 4 get component var delta, mkt imbalance delta
-// step 5 derive optimal from control, far touch avaiable, max trading quantity, max quota avaialbe sell and buy, spread too large
-
-getPreParedFilteredSigMatchforDay:{[xtest;d;bsqtlDay;FilterBuyQtl;FilterSellQtl]
-blimit: (flip bsqtlDay)[FilterBuyQtl][0];
-slimit: (flip bsqtlDay)[FilterSellQtl][0];
-xd: select from xtest1 where date = d, not null predrtn;
-xd: update mv15volume: 300 msum (TotalVolume - 0 ^ 1 xprev TotalVolume) * mid,mv30volume: 600 msum (TotalVolume - 0 ^ 1 xprev TotalVolume) * mid ,totalmarkettrade: (TotalVolume - 0 ^ 1 xprev TotalVolume) * mid by symbol from xd;
-xd: update totalmarkettrade: sums totalmarkettrade from `time`SeqNo xasc xd;
-:select from xd where (predrtn > blimit) or (predrtn < slimit)};
+// Rest should be fine
+// seems not very useful
+applyf1_4:{[f;constraints]
+ };
+applyf1_5:{[f;constraints]
+ };
+applyf2_4:{[f;constraints]
+ };
+applyf2_5:{[f;constraints]
+ };
 
 
-// analytical functions
+// EXPAND THESE INTO F
+applyfwjafterconstrain :{[f;applycol;filtercol;constraints;newname]
+n:count applycol;
+m:count filtercol;
+if[(n=1)and(m=1);
+:(enlist {[f;x;x1;name]f[x;x1]}[applyf1_1[f;constraints];;;]),applycol,filtercol,enlist newname;
+];
+if[(n=1)and(m=2);
+:(enlist {[f;x;x1;x2;name]f[x;x1;x2]}[applyf1_2[f;constraints];;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=1)and(m=3);
+:(enlist {[f;x;x1;x2;x3;name]f[x;x1;x2;x3]}[applyf1_3[f;constraints];;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=1)and(m=4);
+:(enlist {[f;x;x1;x2;x3;x4;name]f[x;x1;x2;x3;x4]}[applyf1_4[f;constraints];;;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=2)and(m=1);
+:(enlist {[f;x;y;x1;name]f[x;y;x1]}[applyf2_1[f;constraints];;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=2)and(m=2);
+:(enlist {[f;x;y;x1;x2;name]f[x;y;x1;x2]}[applyf2_2[f;constraints];;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=2)and(m=3);
+:(enlist {[f;x;y;x1;x2;x3;name]f[x;y;x1;x2;x3]}[applyf2_3[f;constraints];;;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=3)and(m=1);
+:(enlist {[f;x;y;z;x1;name]f[x;y;z;x1]}[applyf3_1[f;constraints];;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=3)and(m=2);
+:(enlist {[f;x;y;z;x1;x2;name]f[x;y;z;x1;x2]}[applyf3_2[f;constraints];;;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=4)and(m=1);
+:(enlist {[f;x;y;z;u;x1;name]f[x;y;z;u;x1]}[applyf4_1[f;constraints];;;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=4)and(m=2);
+:(enlist {[f;x;y;z;u;x1;x2;name]f[x;y;z;u;x1;x2]}[applyf4_2[f;constraints];;;;;;;]),applycol,filtercol,enlist newname;
+];
+if[(n=5)and(m=1);
+:(enlist {[f;x;y;z;u;v;x1;name]f[x;y;z;u;v;x1]}[applyf5_1[f;constraints];;;;;;;]),applycol,filtercol,enlist newname;
+];
+:`;
+};
 
-PorfolioVarUnitDiff:{[covm;pos;iloc]
-                      deri1: 2*covm mmu pos;
-                      delta: (neg pos) + 1.0 * iloc = til count pos;
-                      k1: delta mmu deri1;
-                      k2: delta mmu covm mmu delta;
-                      :(k1;k2 - k1)};
+// make up table --- Calc table  ----  WJWindow; Calc; Nameconventions; ApplyTable ?
+//   | TableName; WJwindow;  FeaturePrefix ; ApplyFunction And Args[ FeatureName ] |  --- this should be 1 row
+//  Eventually new FeatureName will be  WJNum + FeaturePrefix + FeatureName
 
-MarketImbalanceUnitDiff:{[tgtscale;imbalance;varmkt]
-                        :(2.0*varmkt*imbalance%tgtscale; varmkt)};
+process1win: {[tgtx;infotable;iter;iteritem]
+  w: iteritem`win;       
+  : delete time from wj1[ $[w=0W; ((count tgtx)#0t;tgtx`time); (tgtx`time) +/: (neg w; 0) * 60 * 1000];
+      `time; tgtx; (enlist infotable), first value iter[iteritem]]
+};
 
+process1table: {[tgtx;tablesource;iter; iterkey; tableid]
+    winstoprocess: select from iterkey where table = tableid;
+    :{x,'y} over process1win[tgtx;tablesource[tableid];iter;] each winstoprocess
+};
 
-// configx: `vark1`vark2`slope`mktvar`tgtscale`covmatrix!(1.0; 1.0 ;1e7 ;1.0; 1e7; covm)
-// return (succeedcond;actqty;idealqty;infK;infY,;deltavar1;deltav2)
-
-InferQty:{[adjbaseR;predR;pos;symboliloc;imbalance;currentscale;LV;configx]
-           kkvar1:  PorfolioVarUnitDiff[configx`covmatrix;pos;symboliloc];
-           kkvar2:  MarketImbalanceUnitDiff[configx`tgtscale;imbalance;configx`mktvar];
-           // K*x >= y
-           inferK: (1.0%configx`slope) + ((configx`vark1)*(kkvar1[1])%currentscale) + ((configx`vark2)*(kkvar2[1])%configx`tgtscale);
-           infery:  predR - adjbaseR + ((configx`vark1)*(kkvar1[0])) + ((configx`vark2)*(kkvar2[0]));
-           idealqty: infery%inferK;
-           idealqty:?[predR>0; max(0,idealqty); min(0,idealqty)]; // make sure buy sell make sens
-           actqty: min(abs idealqty,LV);
-           deltavar1: (kkvar1[0] + kkvar1[1]*(actqty%currentscale))*actqty%currentscale;
-           deltavar2: (kkvar2[0] + kkvar2[1]*(actqty%configx`tgtscale))* actqty%configx`tgtscale;
-           :$[inferK>0;(1b;actqty;idealqty;inferK;infery;deltavar1;deltavar2);(0b;actqty;idealqty;deltavar1;deltavar2)]};        
-
+wjtable:wjtables
+ApplyWJTable:{[tgtx;tablesource;wjtable]
+ nameprefix: (?[0W = wjtable`win; (count wjtable)#enlist "wall"; "w",/:  string  wjtable`win]),' string wjtable`prefix;
+ wjtable: 
+ wjtable: update prefix: nameprefix, funele:   { { (-1 _ x), `$ y, (string last x) }'[x;y]  }[funele; nameprefix]     from wjtable;
+ iter: select funele by table, win from wjtable;
+ iterkey: `table`win xasc key iter;
+ itertables: exec distinct table from iterkey;
+ :{x,'y} over (enlist tgtx), process1table[select time from tgtx;tablesource;iter; iterkey; ] each itertables ;
+};
 
 
-LambdaPorfolioVar: 1.0;
-LambdaBSImbalanceVar: 1.0;
-TradeSlopeK:1e7;
-BaseBuyQtl: `bps100;
-BaseSellQtl: `bps9800;
-FilterBuyQtl: `bps500;
-FilterSellQtl: `bps9000;
-TRADECAP: 2e6;
+
+sameric: { `$@[string x;til 6]};
+
+readdaily:{
+dailysource: system "ls /data2/dailydata";
+rtn: (),/ { ("ISDFFFFFFFFFF";enlist ",") 0: `$":/data2/dailydata/",x} each dailysource;
+:rtn};
+dailydata: readdaily[];
+dailydata: update sym: sameric each ts_code from dailydata;
+
+crmpath: `:/data2/crmmap.csv;
+crmmap:("SS";enlist ",") 0:crmpath;
+
+Qcrms: `C30572`C31448`C32042`C32172`C35766`C35831`C35848`C36022`C36146`C36379`C36384`C36477`C36580`C36627`C36835`C37198`C37208`C37434`C37435`C37512`C37666`C37667`C37669`C37849`C37858`C37859`C40120`C42839`C43244;
+l1crm: `C35831`C31448`C35766;
+l2crm: `C43244`C32042;
+l3crm: `C30572`C36835`C36022`C35848`C36477`C37849`C37669`C37512`C36580;
+accountmap:()!();
+accountmap[`tier1]: l1crm;
+accountmap[`tier2]: l2crm;
+accountmap[`tier3]: l3crm;
+accountmap[`otherQ]: Qcrms where not Qcrms in l1crm,l2crm,l3crm;
+reverseaccountmap: (()!()) ,/ {[k;m] m[k]!(count m[k])#k}[;accountmap] each key accountmap;
 
 
-d: 2019.02.01
-bsqtlDay: getrtnqtlford[xtest1;d;qtls];
-getConnectUniverse[ConnectChangeTable;.z.d]
-xtestford: getPreParedFilteredSigMatchforDay[xtest1;d;bsqtlDay;FilterBuyQtl;FilterSellQtl];
-.Q.gc[]
+files:  "/data2/cdata2copy";
+
+gettgt:{[p]
+    files: system "ls ",p;
+    files: distinct ssr[;"#";""] each files;
+    :files;
+ };
+
+tgt: gettgt[files];
+
+f:tgt[600]
+
+getdata: {[f;files]
+       0N!f;
+       datax: get `$ ":", files,"/",f;
+       o1: datax[0];
+       o2: datax[1];
+       e1: datax[2];
+       extrao: datax[6];
+       hpro: datax[7];
+       hpre: datax[8];
+        :(o1;o2;e1;hpro;hpre;extrao);
+  };
+
+alldata: getdata each tgt;
 
 
-EmptySODPosition:([] symbol:enlist `; currentpos: 0; sellable: 0);
-EmptyRtnTable: flip `symbol`time`SeqNo`SucceedInf`BS`Quantity`IdealQty`predrtn`infK`infy`deltav1`deltav2`basertn`adjrtn`fartouch`intvalMktAllow`intalreadytrade`TotalMktVol! enlist each(`;00:00:00.000;0j;1b;1b;100.0;100.0;0.0;1.0;0.0;0.0;0.0;0.0;0.0;1000e;1000.0;100.0;0.0);
+
+uniricmap: {x ! sameric each x} ;
+mapd: {x ! sameric each x} distinct (exec distinct RIC from o1),(exec distinct RIC from hpro);
+
+o1: update sym: mapd RIC, Side: ?[Side="1";`b;`s], accategory: `other ^ reverseaccountmap Account from o1;
+hpro: update sym:mapd RIC, Side: ?[Side="1";`b;`s], accategory: `other ^ reverseaccountmap Account from hpro;
+hpre: hpre lj `OrderId xkey select OrderId, Account, accategory, Account, Side, sym from hpro;
 
 
-d: 2019.02.01
-SODPosition:EmptySODPosition
-
-universeandcov: getcovford[covdic;d];
-symboluniverseford: universeandcov[0];
-covforda:universeandcov[1];
-todayposition: update symbol:symboluniverseford from  0 ^ @[`symbol xkey SODPosition;] each symboluniverseford; // suppose any stocks we should have it
-
-x: (todayposition;EmptyRtnTable;Imbalance)
-row: xtestford[10000]
 
 
-configOfD: `vark1`vark2`slope`mktvar`tgtscale`covmatrix`symbols`noadjust`allowsell!(1.0; 1.0 ;1e7 ;1.0; 1e7; covforda; symboluniverseford;1b;0b)
+r1: select OrderId, RootId: OrderId, nextParent: -1 , level:0 from o1;
+r2: select OrderId, RootId: OrderId, nextParent: ParentId, level:1 from o2;
+parentrela: (exec OrderId!ParentId from o1), (exec OrderId!ParentId from o2);
+while[ not 0 = exec sum nextParent <> -1 from r2 ;
+r2: update RootId: parentrela RootId, nextParent: parentrela nextParent,level: level + 1 from r2 where not nextParent = -1;
+];
+o2: o2 lj `OrderId xkey select OrderId, RootId, level from r2;
+o2: o2 lj `RootId xkey select RootId:OrderId, sym, Side, StratType, Account,accategory from o1;
+e1: e1 lj `OrderId xkey select sym, Account,accategory, Side, StratType, RootId, OrderId from o2;
+e1: e1 lj `OrderId xkey select sym, Account,accategory, Side, StratType, RootId:OrderId, OrderId from o1;
 
-processRow:{[x;row;configOfD]
+tgtcrm: `C35831`C31448;
+tgtframe: (select sym: mapd RIC,`time$time, Side, Account, OrderId, Price, Quantity from o1 where Account in tgtcrm, event=`Pending), (select sym: mapd RIC,`time$time, Side, Account,OrderId, Price, Quantity from hpro where Account in tgtcrm, event=`Pending);
+
+symall: exec distinct sym from tgtframe;
+symx:symall[0]
+
+
+
+
+
+
+onesym: {[o1;o2;e1;hpro;hpre;tgtframe;wjtables;symx]
+0N!symx;
+o1x: (select time, Account,accategory, event, OrderId, Price, Quantity, Side, StratType, OrigGroup, Destination: VirtualDestination from o1 where sym = symx, not VirtualDestination = `CROSS, not Account in tgtcrm),(select time, Account,accategory, event, OrderId , Price, Quantity, Side, StratType:12h, OrigGroup:`HPR, Destination:`HPR from hpro where  sym = symx, not Account in tgtcrm) ;
+o1x: update axis:`Parent, RootId: OrderId, activeQty: ?[event=`PendingCancel;0;Quantity] from o1x;
+o1mchild: select time, Account,accategory, event, OrderId, Price, Quantity, Side,StratType:0Nh, OrigGroup:`, axis:`Child, RootId,Destination: VirtualDestination  from o2 where sym = symx, not Account in tgtcrm, VirtualDestination like "*M*";
+o1exec:   (select time, Account,accategory, event, OrderId, Price, Quantity, Side,StratType:0Nh, OrigGroup:`, axis:`Child, RootId,Destination from e1 where sym = symx, not Account in tgtcrm, event = `Executed), (select time, Account,accategory, event:`Executed, OrderId, Price, Quantity, Side,StratType:12h, OrigGroup:`, axis:`Child,RootId: OrderId ,Destination:`HPR from hpre where sym = symx);
+o1child: o1mchild, o1exec;
+oall: `time xasc o1x, update activeQty: 0Nj from o1child;
+oall: update time:`time$time, cumQty: sums ?[event=`Executed;Quantity;0], fills activeQty, fills StratType, fills OrigGroup by RootId from oall;
+oall: delete from oall where Destination = `CROSS, null activeQty;
+tgtx: select from tgtframe where sym = symx;
+tablesource:`all`executed!(oall;select from oall where event = `Executed);
+:ApplyWJTable[tgtx;tablesource;wjtables]};
+
+
+accountsidestats:{[sidecol;accol;tgtside]
+            if[0 = count sidecol;:0i]; 
+            sum value  {[x;y] y ~ asc distinct x}[; tgtside] each sidecol group accol};
+
+
+
+getExecAcgroupBasicFeature1:{[acgroup;wjwins;prefix]
+   idfun : {[x;y] x=y}[;acgroup];
+   funcs: (enlist applyfwjafterconstrain[sum;enlist `Quantity; `accategory`Side; (idfun ;{x=`b});`sumb]),
+          (enlist applyfwjafterconstrain[sum;enlist `Quantity; `accategory`Side; (idfun ;{x=`s});`sums]),
+          (enlist applyfwjafterconstrain[{?[0<count x;x wavg y;0nf]}; `Quantity`Price; `accategory`Side; (idfun ;{x=`b});`avgpxb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;x wavg y;0nf]}; `Quantity`Price; `accategory`Side; (idfun ;{x=`s});`avgpxs]),
+          (enlist applyfwjafterconstrain[{?[0<count x;min x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`b});`minpxb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;min x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`s});`minpxs]),
+          (enlist applyfwjafterconstrain[{?[0<count x;max x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`b});`maxpxb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;max x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`s});`maxpxs]),
+          (enlist applyfwjafterconstrain[{?[0<count x;last x;`]};enlist `Side; enlist `accategory; (enlist idfun );`lastsd]),
+          (enlist applyfwjafterconstrain[{?[0<count x;last x;0nf]};enlist `Price; enlist `accategory; (enlist idfun );`lastpx]); 
+ : {`table`win`prefix`funele!x} each raze (`executed,/: wjwins,'prefix) ,/:\: enlist each funcs ;};
+
+
+getExecAcgroupBasicFeature2:{[acgroup;wjwins;prefix]
+   idfun : {[x;y] x=y}[;acgroup];
+   funcs: (enlist applyfwjafterconstrain[{?[0<count x; count distinct x;0]};enlist `Account; `accategory`Side; (idfun ;{x=`b});`nbac]),
+          (enlist applyfwjafterconstrain[{?[0<count x; count distinct x;0]};enlist `Account; `accategory`Side; (idfun ;{x=`s});`nsac]);
+ : {`table`win`prefix`funele!x} each raze (`executed,/: wjwins,'prefix) ,/:\: enlist each funcs ;};
+
+
+priceqtl:{[price;qty;splitN]
+            qtyqtl: (1 + til splitN - 1) * (1.0%splitN) *  sum qty;
+            sortqty: qty iasc price;
+            reverse 1 _ fills reverse value (til splitN )#max each (asc price) group sum each (sums sortqty) >\: qtyqtl};
+
+// Qtls 
+getExecQtlsQuantNonQuant:{[wjwins;prefix]
+   funcs: (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({not x = `other} ;{x=`b});`QtBqtls]),
+          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({not x = `other} ;{x=`s});`QtSqtls]),
+          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({x = `other} ;{x=`b});`nQtBqtls]),
+          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({x = `other} ;{x=`s});`nQtSqtls]);
+   : {`table`win`prefix`funele!x} each raze (`executed,/: wjwins,'prefix) ,/:\: enlist each funcs ;};
+
+
 // 
 
+sumActive:{[RootId;activeQty;cumQty]
+if[0=count RootId;:0];
+:{sum ?[x>0;x;0]} value last each (activeQty - cumQty) group RootId;};
+
+getActiveFutureQty:{
+      funcs: (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side; ({x = `other} ;{x=`b});`bfutqty]),
+          (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side; ({x = `other} ;{x=`s});`sfutqty]);
+       {`table`win`prefix`funele!x} each (`all; 0W;`) ,/: enlist each funcs };
+
+
+oall
+
+
+symall
+
+
+
+wjtables: getExecAcgroupBasicFeature1[`tier1;(20;40;60;0W);`tier1], 
+          getExecAcgroupBasicFeature1[`tier2;(20;40;60;0W);`tier2], 
+          getExecAcgroupBasicFeature1[`tier3;(20;40;60;0W);`tier3], getExecAcgroupBasicFeature2[`tier3;(20;40;60;0W);`tier3],
+          getExecAcgroupBasicFeature1[`otherQ;(20;40;60;0W);`otherQ], getExecAcgroupBasicFeature2[`otherQ;(20;40;60;0W);`otherQ],
+          getExecAcgroupBasicFeature1[`other;(20;40;60;0W);`other], getExecAcgroupBasicFeature2[`other;(20;40;60;0W);`other],
+          getExecQtlsQuantNonQuant[(20;40;60;0W);`],
+          getActiveFutureQty[],
+
+
+rtn : onesym[o1;o2;e1;hpro;hpre;tgtframe;wjtables;] peach symall
+
+
+rtn: (),/ rtn
+
+rtn: update d
 
 
 
 
-}
+
 
