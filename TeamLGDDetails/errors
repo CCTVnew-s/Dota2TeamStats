@@ -49,8 +49,8 @@ applyf3_2:{[f;constraints]
    loc:(constraints[0][x1]) and (constraints[1][x2]);
    :f[x where loc;y where loc;z where loc]}[f;;;;;;constraints]
  };
-applyf3_2:{[f;constraints]
-:{[f;x;y;z;x1 ;constraints]
+applyf3_3:{[f;constraints]
+:{[f;x;y;z;x1;x2;x3 ;constraints]
    loc:(constraints[0][x1]) and (constraints[1][x2]) and (constraints[2][x3]);
    :f[x where loc;y where loc;z where loc]}[f;;;;;;;constraints]
  };
@@ -62,9 +62,9 @@ applyf4_1:{[f;constraints]
  };
 
 applyf4_2:{[f;constraints]
-:{[f;x;y;z;x1 ;constraints]
+:{[f;x;y;z;w;x1;x2 ;constraints]
    loc:(constraints[0][x1]) and (constraints[1][x2]);
-   :f[x where loc;y where loc;z where loc]}[f;;;;;;;constraints]
+   :f[x where loc;y where loc;z where loc;w where loc]}[f;;;;;;;constraints]
  };
 
 applyf5_1:{[f;constraints]
@@ -118,6 +118,9 @@ if[(n=3)and(m=1);
 if[(n=3)and(m=2);
 :(enlist {[f;x;y;z;x1;x2;name]f[x;y;z;x1;x2]}[applyf3_2[f;constraints];;;;;;]),applycol,filtercol,enlist newname;
 ];
+if[(n=3)and(m=3);
+:(enlist {[f;x;y;z;x1;x2;x3;name]f[x;y;z;x1;x2;x3]}[applyf3_3[f;constraints];;;;;;;]),applycol,filtercol,enlist newname;
+];
 if[(n=4)and(m=1);
 :(enlist {[f;x;y;z;u;x1;name]f[x;y;z;u;x1]}[applyf4_1[f;constraints];;;;;;]),applycol,filtercol,enlist newname;
 ];
@@ -145,7 +148,6 @@ process1table: {[tgtx;tablesource;iter; iterkey; tableid]
     :{x,'y} over process1win[tgtx;tablesource[tableid];iter;] each winstoprocess
 };
 
-wjtable:wjtables
 ApplyWJTable:{[tgtx;tablesource;wjtable]
  nameprefix: (?[0W = wjtable`win; (count wjtable)#enlist "wall"; "w",/:  string  wjtable`win]),' string wjtable`prefix;
  wjtable: 
@@ -158,130 +160,98 @@ ApplyWJTable:{[tgtx;tablesource;wjtable]
 
 
 
-sameric: { `$@[string x;til 6]};
+// quantity normalized by quantity       
 
-readdaily:{
-dailysource: system "ls /data2/dailydata";
-rtn: (),/ { ("ISDFFFFFFFFFF";enlist ",") 0: `$":/data2/dailydata/",x} each dailysource;
-:rtn};
-dailydata: readdaily[];
-dailydata: update sym: sameric each ts_code from dailydata;
+calccxlqtyrate:{[ordid;event;remqty;ordqty]
+   if [0 = count ordid;:0nf];
+   cloc: event = `PendingCancel;
+   if [0 = sum cloc;:0.0];
+   cxlqty: sum first each (remqty where cloc) group (ordid where cloc);
+   allqty: sum first each ordqty group ordid;
+   :cxlqty%allqty};
 
-crmpath: `:/data2/crmmap.csv;
-crmmap:("SS";enlist ",") 0:crmpath;
+calccxlcntrate:{[ordid;event]
+   if [0 = count ordid;:0nf];
+   cloc: event = `PendingCancel;
+   if [0 = sum cloc;:0.0];
+   cxlcnt: sum cloc;
+   allcnt: count distinct ordid;
+   :cxlcnt%allcnt};
 
-Qcrms: `C30572`C31448`C32042`C32172`C35766`C35831`C35848`C36022`C36146`C36379`C36384`C36477`C36580`C36627`C36835`C37198`C37208`C37434`C37435`C37512`C37666`C37667`C37669`C37849`C37858`C37859`C40120`C42839`C43244;
-l1crm: `C35831`C31448`C35766;
-l2crm: `C43244`C32042;
-l3crm: `C30572`C36835`C36022`C35848`C36477`C37849`C37669`C37512`C36580;
-accountmap:()!();
-accountmap[`tier1]: l1crm;
-accountmap[`tier2]: l2crm;
-accountmap[`tier3]: l3crm;
-accountmap[`otherQ]: Qcrms where not Qcrms in l1crm,l2crm,l3crm;
-reverseaccountmap: (()!()) ,/ {[k;m] m[k]!(count m[k])#k}[;accountmap] each key accountmap;
+calcopenqty:{[ordid;event;remqty]
+if [0 = count ordid;:0nf];
+cxlord: distinct ordid where event = `PendingCancel;
+reqtymap: last each remqty group ordid ;
+openqty: sum  @[reqtymap ;(key reqtymap) where (not (key reqtymap) in cxlord)];
+:openqty};
 
+calcopenrate:{[ordid;event;remqty;ordqty]
+if [0 = count ordid;:0nf];
+cxlord: distinct ordid where event = `PendingCancel;
+reqtymap: last each remqty group ordid ;
+openqty: sum  @[reqtymap ;(key reqtymap) where (not (key reqtymap) in cxlord)];
+totalqty: sum last each ordqty group ordid;
+:openqty%totalqty};
 
-files:  "/data2/cdata2copy";
+calcfillingtm:{[ordid;tm;event]
+if[0 = count ordid; :0nf];
+ordid: ordid where not event = `Pending;
+tm: tm where not event = `Pending;
+: `float$ avg last each tm group ordid};
 
-gettgt:{[p]
-    files: system "ls ",p;
-    files: distinct ssr[;"#";""] each files;
-    :files;
- };
+calcaggressiverate:{[ordid;tm;event]
+if[0 = count ordid; :0nf];
+ordid: ordid where not event = `Pending;
+tm: tm where not event = `Pending;
+selected: tm < 00:05:00.000;
+ordid: ordid where selected;
+tm: tm where selected;
+ft: value first each tm group ordid;
+if[0=count ft;:0nf];
+:(sum ft<1000)%count ft};
 
-tgt: gettgt[files];
+getmarketchildacfeature1:{[acgroupfun;wjwins;prefix]
+    funcs: (enlist applyfwjafterconstrain[calccxlqtyrate;`OrderId`event`remqty`OrderQty;`accategory`Side;(acgroupfun;{x=`b});`sigchildcxlrateb]),
+           (enlist applyfwjafterconstrain[calccxlqtyrate;`OrderId`event`remqty`OrderQty;`accategory`Side;(acgroupfun;{x=`s});`sigchildcxlrates]),
+            (enlist applyfwjafterconstrain[calccxlcntrate;`OrderId`event;`accategory`Side;(acgroupfun;{x=`b});`sigchildcxlcntrateb]),
+            (enlist applyfwjafterconstrain[calccxlcntrate;`OrderId`event;`accategory`Side;(acgroupfun;{x=`s});`sigchildcxlcntrates]),
+            (enlist applyfwjafterconstrain[calcopenqty;`OrderId`event`remqty;`accategory`Side;(acgroupfun;{x=`b});`childopenqtyquantityb]),
+            (enlist applyfwjafterconstrain[calcopenqty;`OrderId`event`remqty;`accategory`Side;(acgroupfun;{x=`s});`childopenqtyquantitys]),
+            (enlist applyfwjafterconstrain[calcopenrate;`OrderId`event`remqty`OrderQty;`accategory`Side;(acgroupfun;{x=`b});`sigchildopenrtb]),
+            (enlist applyfwjafterconstrain[calcopenrate;`OrderId`event`remqty`OrderQty;`accategory`Side;(acgroupfun;{x=`s});`sigchildopenrts]),
+            (enlist applyfwjafterconstrain[calcfillingtm;`OrderId`lifetm`event;`accategory`Side;(acgroupfun;{x=`b});`sigchildfillingtmb]),
+            (enlist applyfwjafterconstrain[calcfillingtm;`OrderId`lifetm`event;`accategory`Side;(acgroupfun;{x=`s});`sigchildfillingtms]),
+            (enlist applyfwjafterconstrain[calcaggressiverate;`OrderId`lifetm`event;`accategory`Side;(acgroupfun;{x=`b});`sigchildaggrateb]),
+            (enlist applyfwjafterconstrain[calcaggressiverate;`OrderId`lifetm`event;`accategory`Side;(acgroupfun;{x=`s});`sigchildaggrates]);
+             :{`table`win`prefix`funele!x} each raze (`marketchild,/: wjwins,'prefix) ,/:\: enlist each funcs ;};
 
-f:tgt[600]
-
-getdata: {[f;files]
-       0N!f;
-       datax: get `$ ":", files,"/",f;
-       o1: datax[0];
-       o2: datax[1];
-       e1: datax[2];
-       extrao: datax[6];
-       hpro: datax[7];
-       hpre: datax[8];
-        :(o1;o2;e1;hpro;hpre;extrao);
-  };
-
-alldata: getdata each tgt;
-
-
-
-uniricmap: {x ! sameric each x} ;
-mapd: {x ! sameric each x} distinct (exec distinct RIC from o1),(exec distinct RIC from hpro);
-
-o1: update sym: mapd RIC, Side: ?[Side="1";`b;`s], accategory: `other ^ reverseaccountmap Account from o1;
-hpro: update sym:mapd RIC, Side: ?[Side="1";`b;`s], accategory: `other ^ reverseaccountmap Account from hpro;
-hpre: hpre lj `OrderId xkey select OrderId, Account, accategory, Account, Side, sym from hpro;
-
-
-
-
-r1: select OrderId, RootId: OrderId, nextParent: -1 , level:0 from o1;
-r2: select OrderId, RootId: OrderId, nextParent: ParentId, level:1 from o2;
-parentrela: (exec OrderId!ParentId from o1), (exec OrderId!ParentId from o2);
-while[ not 0 = exec sum nextParent <> -1 from r2 ;
-r2: update RootId: parentrela RootId, nextParent: parentrela nextParent,level: level + 1 from r2 where not nextParent = -1;
-];
-o2: o2 lj `OrderId xkey select OrderId, RootId, level from r2;
-o2: o2 lj `RootId xkey select RootId:OrderId, sym, Side, StratType, Account,accategory from o1;
-e1: e1 lj `OrderId xkey select sym, Account,accategory, Side, StratType, RootId, OrderId from o2;
-e1: e1 lj `OrderId xkey select sym, Account,accategory, Side, StratType, RootId:OrderId, OrderId from o1;
-
-tgtcrm: `C35831`C31448;
-tgtframe: (select sym: mapd RIC,`time$time, Side, Account, OrderId, Price, Quantity from o1 where Account in tgtcrm, event=`Pending), (select sym: mapd RIC,`time$time, Side, Account,OrderId, Price, Quantity from hpro where Account in tgtcrm, event=`Pending);
-
-symall: exec distinct sym from tgtframe;
-symx:symall[0]
-
-
-
-
-
-
-onesym: {[o1;o2;e1;hpro;hpre;tgtframe;wjtables;symx]
-0N!symx;
-o1x: (select time, Account,accategory, event, OrderId, Price, Quantity, Side, StratType, OrigGroup, Destination: VirtualDestination from o1 where sym = symx, not VirtualDestination = `CROSS, not Account in tgtcrm),(select time, Account,accategory, event, OrderId , Price, Quantity, Side, StratType:12h, OrigGroup:`HPR, Destination:`HPR from hpro where  sym = symx, not Account in tgtcrm) ;
-o1x: update axis:`Parent, RootId: OrderId, activeQty: ?[event=`PendingCancel;0;Quantity] from o1x;
-o1mchild: select time, Account,accategory, event, OrderId, Price, Quantity, Side,StratType:0Nh, OrigGroup:`, axis:`Child, RootId,Destination: VirtualDestination  from o2 where sym = symx, not Account in tgtcrm, VirtualDestination like "*M*";
-o1exec:   (select time, Account,accategory, event, OrderId, Price, Quantity, Side,StratType:0Nh, OrigGroup:`, axis:`Child, RootId,Destination from e1 where sym = symx, not Account in tgtcrm, event = `Executed), (select time, Account,accategory, event:`Executed, OrderId, Price, Quantity, Side,StratType:12h, OrigGroup:`, axis:`Child,RootId: OrderId ,Destination:`HPR from hpre where sym = symx);
-o1child: o1mchild, o1exec;
-oall: `time xasc o1x, update activeQty: 0Nj from o1child;
-oall: update time:`time$time, cumQty: sums ?[event=`Executed;Quantity;0], fills activeQty, fills StratType, fills OrigGroup by RootId from oall;
-oall: delete from oall where Destination = `CROSS, null activeQty;
-tgtx: select from tgtframe where sym = symx;
-tablesource:`all`executed!(oall;select from oall where event = `Executed);
-:ApplyWJTable[tgtx;tablesource;wjtables]};
-
+// imbl-- need imbalance
+// adv -- need adv normalization
+// sig 00 will be out
+// Price, normalized by price
+// Pxqtls ~~ need qtl calculation normalization
+//  Side need to normalzied by = `b
 
 accountsidestats:{[sidecol;accol;tgtside]
             if[0 = count sidecol;:0i]; 
             sum value  {[x;y] y ~ asc distinct x}[; tgtside] each sidecol group accol};
 
-
-
 getExecAcgroupBasicFeature1:{[acgroup;wjwins;prefix]
    idfun : {[x;y] x=y}[;acgroup];
-   funcs: (enlist applyfwjafterconstrain[sum;enlist `Quantity; `accategory`Side; (idfun ;{x=`b});`sumb]),
-          (enlist applyfwjafterconstrain[sum;enlist `Quantity; `accategory`Side; (idfun ;{x=`s});`sums]),
-          (enlist applyfwjafterconstrain[{?[0<count x;x wavg y;0nf]}; `Quantity`Price; `accategory`Side; (idfun ;{x=`b});`avgpxb]),
-          (enlist applyfwjafterconstrain[{?[0<count x;x wavg y;0nf]}; `Quantity`Price; `accategory`Side; (idfun ;{x=`s});`avgpxs]),
-          (enlist applyfwjafterconstrain[{?[0<count x;min x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`b});`minpxb]),
-          (enlist applyfwjafterconstrain[{?[0<count x;min x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`s});`minpxs]),
-          (enlist applyfwjafterconstrain[{?[0<count x;max x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`b});`maxpxb]),
-          (enlist applyfwjafterconstrain[{?[0<count x;max x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`s});`maxpxs]),
-          (enlist applyfwjafterconstrain[{?[0<count x;last x;`]};enlist `Side; enlist `accategory; (enlist idfun );`lastsd]),
-          (enlist applyfwjafterconstrain[{?[0<count x;last x;0nf]};enlist `Price; enlist `accategory; (enlist idfun );`lastpx]); 
- : {`table`win`prefix`funele!x} each raze (`executed,/: wjwins,'prefix) ,/:\: enlist each funcs ;};
-
-
-getExecAcgroupBasicFeature2:{[acgroup;wjwins;prefix]
-   idfun : {[x;y] x=y}[;acgroup];
-   funcs: (enlist applyfwjafterconstrain[{?[0<count x; count distinct x;0]};enlist `Account; `accategory`Side; (idfun ;{x=`b});`nbac]),
-          (enlist applyfwjafterconstrain[{?[0<count x; count distinct x;0]};enlist `Account; `accategory`Side; (idfun ;{x=`s});`nsac]);
+   funcs: (enlist applyfwjafterconstrain[sum;enlist `Quantity; `accategory`Side; (idfun ;{x=`b});`sumvoladvimblb]),
+          (enlist applyfwjafterconstrain[sum;enlist `Quantity; `accategory`Side; (idfun ;{x=`s});`sumvoladvimbls]),
+          (enlist applyfwjafterconstrain[{sum x*y};`Quantity`Price; `accategory`Side; (idfun ;{x=`b});`sigsumnotionb]),
+          (enlist applyfwjafterconstrain[{sum x*y}; `Quantity`Price; `accategory`Side; (idfun ;{x=`s});`sigsumnotions]),
+          (enlist applyfwjafterconstrain[{?[0<count x;x wavg y;0nf]}; `Quantity`Price; `accategory`Side; (idfun ;{x=`b});`avgpriceb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;x wavg y;0nf]}; `Quantity`Price; `accategory`Side; (idfun ;{x=`s});`avgprices]),
+          (enlist applyfwjafterconstrain[{?[0<count x;min x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`b});`minpriceb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;min x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`s});`minprices]),
+          (enlist applyfwjafterconstrain[{?[0<count x;max x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`b});`maxpriceb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;max x;0nf]};enlist `Price; `accategory`Side; (idfun ;{x=`s});`maxprices]),
+          (enlist applyfwjafterconstrain[{?[0<count x;last x;`]};enlist `Side; enlist `accategory; (enlist idfun );`lastside]),
+          (enlist applyfwjafterconstrain[{?[0<count x;last x;0nf]};enlist `Price; enlist `accategory; (enlist idfun );`lastprice]),
+          (enlist applyfwjafterconstrain[{?[0<count x; count distinct x;0]};enlist `Account; `accategory`Side; (idfun ;{x=`b});`signumacb]),
+          (enlist applyfwjafterconstrain[{?[0<count x; count distinct x;0]};enlist `Account; `accategory`Side; (idfun ;{x=`s});`signumacs]);
  : {`table`win`prefix`funele!x} each raze (`executed,/: wjwins,'prefix) ,/:\: enlist each funcs ;};
 
 
@@ -292,47 +262,145 @@ priceqtl:{[price;qty;splitN]
 
 // Qtls 
 getExecQtlsQuantNonQuant:{[wjwins;prefix]
-   funcs: (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({not x = `other} ;{x=`b});`QtBqtls]),
-          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({not x = `other} ;{x=`s});`QtSqtls]),
-          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({x = `other} ;{x=`b});`nQtBqtls]),
-          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({x = `other} ;{x=`s});`nQtSqtls]);
+   funcs: (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({not x = `other} ;{x=`b});`nonquantPxqtlsb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({not x = `other} ;{x=`s});`nonquantPxqtlss]),
+          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({x = `other} ;{x=`b});`quantPxqtlsb]),
+          (enlist applyfwjafterconstrain[{?[0<count x;priceqtl[x;y;5];5#0nf]};`Price`Quantity; `accategory`Side; ({x = `other} ;{x=`s});`quantPxqtlss]);
    : {`table`win`prefix`funele!x} each raze (`executed,/: wjwins,'prefix) ,/:\: enlist each funcs ;};
-
-
-// 
 
 sumActive:{[RootId;activeQty;cumQty]
 if[0=count RootId;:0];
 :{sum ?[x>0;x;0]} value last each (activeQty - cumQty) group RootId;};
 
+sumAllLifeQty:{[RootId;activeQty;cumQty]
+if[0=count RootId;:0];
+:{sum ?[x>0;x;0]} value last each ?[activeQty<cumQty;cumQty;activeQty] group RootId;};
+
+// maybe could think about strategy ~~ certain strategy is more impactful e.g. Tap
+
 getActiveFutureQty:{
-      funcs: (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side; ({x = `other} ;{x=`b});`bfutqty]),
-          (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side; ({x = `other} ;{x=`s});`sfutqty]);
-       {`table`win`prefix`funele!x} each (`all; 0W;`) ,/: enlist each funcs };
+      funcs: (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side`StratType; ({x = `other} ;{x=`b};{not x = 12});`futstratqtyadvb]),
+          (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side`StratType; ({x = `other} ;{x=`s};{not x = 12});`futstratqtyadvs]);
+       :{`table`win`prefix`funele!x} each (`all; 0W;`) ,/: enlist each funcs };
 
+getActiveSSQty:{
+      funcs: (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side`OrigGroup; ({x = `other} ;{x=`b};{x like "*SS*"});`futss_stratqtyadvb]),
+             (enlist applyfwjafterconstrain[sumActive ;`RootId`activeQty`cumQty; `accategory`Side`OrigGroup; ({x = `other} ;{x=`s};{x like "*SS*"});`futss_stratqtyadvs]);
+       :{`table`win`prefix`funele!x} each (`all; 0W;`) ,/: enlist each funcs };
+ 
+sameric: { `$@[string x;til 6]};
+readdaily:{
+dailysource: system "ls /data2/dailydata";
+rtn: (),/ { ("ISDFFFFFFFFFF";enlist ",") 0: `$":/data2/dailydata/",x} each dailysource;
+:rtn};
+dailydata: readdaily[];
+dailydata: update sym: sameric each ts_code from dailydata;
+dailydata: update date: trade_date, adv: 1 xprev 20 mavg vol by sym from dailydata;
+crmpath: `:/data2/crmmap.csv;
+crmmap:("SS";enlist ",") 0:crmpath;
 
-oall
+Qcrms: `C30572`C31448`C32042`C32172`C35766`C35831`C35848`C36022`C36146`C36379`C36384`C36477`C36580`C36627`C36835`C37198`C37208`C37434`C37435`C37512`C37666`C37667`C37669`C37849`C37858`C37859`C40120`C42839`C43244;
+l1crm: `C35831`C31448`C35766;
+l2crm: `C43244`C32042`C36022;
+l3crm: `C30572`C36835``C35848`C36477`C37849`C37669`C37512`C36580;
+accountmap:()!();
+accountmap[`tier1]: l1crm;
+accountmap[`tier2]: l2crm;
+accountmap[`tier3]: l3crm;
+accountmap[`otherQ]: Qcrms where not Qcrms in l1crm,l2crm,l3crm;
+reverseaccountmap: (()!()) ,/ {[k;m] m[k]!(count m[k])#k}[;accountmap] each key accountmap;
 
-
-symall
-
+files:  "/data2/cdata2copy";
+gettgt:{[p]
+    files: system "ls ",p;
+    files: distinct ssr[;"#";""] each files;
+    :files;
+ };
+tgt: gettgt[files];
+tgt: tgt where (tgt like "*2021*") or (tgt like "*2022*") or (tgt like "*2023*");
+getdata: {[f;files]
+      0N!f;      datax: get `$ ":", files,"/",f;
+      o1: datax[0]; o2: datax[1];       e1: datax[2];       extrao: datax[6];       hpro: datax[7];       hpre: datax[8];
+     allsym: distinct  (distinct o1`RIC),   (distinct hpro`RIC);
+     mapd: {x ! sameric each x} allsym;
+     o1: update sym: mapd RIC, Side: ?[Side="1";`b;`s], accategory: `other ^ reverseaccountmap Account from o1;
+    hpro: update sym:mapd RIC, Side: ?[Side="1";`b;`s], accategory: `other ^ reverseaccountmap Account from hpro;
+    hpre: hpre lj `OrderId xkey select OrderId, Account, accategory, Account, Side, sym from hpro;
+    r1: select OrderId, RootId: OrderId, nextParent: -1 , level:0 from o1;
+   r2: select OrderId, RootId: OrderId, nextParent: ParentId, level:1 from o2;
+   parentrela: (exec OrderId!ParentId from o1), (exec OrderId!ParentId from o2);
+   while[ not 0 = exec sum nextParent <> -1 from r2 ;
+   r2: update RootId: parentrela RootId, nextParent: parentrela nextParent,level: level + 1 from r2 where not nextParent = -1];
+   o2: o2 lj `OrderId xkey select OrderId, RootId, level from r2;
+   o2: o2 lj `RootId xkey select RootId:OrderId, sym, Side, StratType, Account,accategory from o1;
+   e1: e1 lj `OrderId xkey select sym, Account,accategory, Side, StratType, RootId, OrderId from o2;
+   e1: e1 lj `OrderId xkey select sym, Account,accategory, Side, StratType, RootId:OrderId, OrderId from o1;
+    :(o1;o2;e1;hpro;hpre;extrao);
+  };
+alldata: getdata[;files] each tgt;
+.Q.gc[];
+// feature naming conventions  
+// directly into signal --> with sig
+// easy ones 1) single normalizations, by price, by adv
+// hard ones 2) imbalance -- need buy vs sell per X
+// also  3) if one feature want to be normalized in multiple ways
+//  any special normalizationfunction, need a feature name
 
 
 wjtables: getExecAcgroupBasicFeature1[`tier1;(20;40;60;0W);`tier1], 
           getExecAcgroupBasicFeature1[`tier2;(20;40;60;0W);`tier2], 
-          getExecAcgroupBasicFeature1[`tier3;(20;40;60;0W);`tier3], getExecAcgroupBasicFeature2[`tier3;(20;40;60;0W);`tier3],
-          getExecAcgroupBasicFeature1[`otherQ;(20;40;60;0W);`otherQ], getExecAcgroupBasicFeature2[`otherQ;(20;40;60;0W);`otherQ],
-          getExecAcgroupBasicFeature1[`other;(20;40;60;0W);`other], getExecAcgroupBasicFeature2[`other;(20;40;60;0W);`other],
-          getExecQtlsQuantNonQuant[(20;40;60;0W);`],
-          getActiveFutureQty[],
+          getExecAcgroupBasicFeature1[`tier3;(20;40;60;0W);`tier3], 
+          getExecAcgroupBasicFeature1[`otherQ;(20;40;60;0W);`otherQ],
+          getExecAcgroupBasicFeature1[`other;(30;60;90;0W);`other], 
+          getExecQtlsQuantNonQuant[(30;60;90;0W);`],  
+          getActiveFutureQty[],getActiveSSQty[],
+               getmarketchildacfeature1[{x=`tier1};enlist 10; `tier1], 
+          getmarketchildacfeature1[{x=`tier2};enlist 10; `tier2],
+               getmarketchildacfeature1[{x in `tier3`otherQ};enlist 10;`remQ],getmarketchildacfeature1[{x=`other};(10;20); `other];
+
+// make it global
+  tgtcrm: `C35831`C31448;
+
+onesym: {[o1;o2;e1;hpro;hpre;tgtframe;wjtables;symx]
+0N!symx;
+o1x: (select time, Account,accategory, event, OrderId, Price, Quantity, Side, StratType, OrigGroup, Destination: VirtualDestination from o1 where sym = symx, not VirtualDestination = `CROSS, not Account in tgtcrm),(select time + 8t, Account,accategory, event, OrderId , Price, Quantity, Side, StratType:12h, OrigGroup:`HPR, Destination:`HPR from hpro where  sym = symx, not Account in tgtcrm) ;
+o1x: update axis:`Parent, RootId: OrderId, activeQty: ?[event=`PendingCancel;0;Quantity] from o1x;
+o1mchild: select time, Account,accategory, event, OrderId, Price, Quantity, Side,StratType:0Nh, OrigGroup:`, axis:`Child, RootId,Destination: VirtualDestination  from o2 where sym = symx, not Account in tgtcrm, VirtualDestination like "*M*";
+o1exec:   (select time, Account,accategory, event, OrderId, Price, Quantity, Side,StratType:0Nh, OrigGroup:`, axis:`Child, RootId,Destination from e1 where sym = symx, not Account in tgtcrm, event = `Executed), (select time + 8t, Account,accategory, event:`Executed, OrderId, Price, Quantity, Side,StratType:12h, OrigGroup:`, axis:`Child,RootId: OrderId ,Destination:`HPR from hpre where sym = symx);
+o1child: o1mchild, o1exec;
+oall: `time xasc o1x, update activeQty: 0Nj from o1child;
+oall: update time: `time$time, cumQty: sums ?[event=`Executed;Quantity;0], fills activeQty, fills StratType, fills OrigGroup by RootId from oall;
+oall: delete from oall where Destination = `CROSS, null activeQty;
+tgtx: select from tgtframe where sym = symx;
+executedtable: select from oall where event = `Executed;
+market: select from oall where (Destination like "*M*") or Destination = `HPR;
+market: update remqty: sums ?[event=`Pending;Quantity;?[event=`Executed;neg Quantity;0]], lifetm: time - first time, OrderQty:first Quantity by OrderId from market;
+tablesource:`all`executed`marketchild!(oall;executedtable;select from market where time >= 09:30:00.000);
+:ApplyWJTable[tgtx;tablesource;wjtables]};
+
+oneday:{[data;wjtables;dailydata]
+    o1:data[0];o2:data[1];e1:data[2];hpro:data[3];hpre:data[4];
+    d: `date$@[first o1;`time];
+    dailyd: select from dailydata where date = d;
+    0N!d;
+   tgtframe: (select sym ,`time$time, Side, Account, OrderId, Price, Quantity from o1 where Account in tgtcrm, event=`Pending), (select sym,`time$time, Side, Account,OrderId, Price, Quantity from hpro where Account in tgtcrm, event=`Pending);
+   symall: exec distinct sym from tgtframe;
+   rtn:  (),/ onesym[o1;o2;e1;hpro;hpre;tgtframe;wjtables;] peach symall;
+   sigfirstpx: select firstprice: first Price by sym, Side from tgtframe where Price>0;
+   if[0 = count rtn;:()];
+:  (rtn lj  `sym xkey delete x from dailyd) lj sigfirstpx};
+
+rtn: oneday[;wjtables;dailydata] each alldata;
+// Need to think about other daily features:  firrst of Day, Previous EOD stats etc
 
 
-rtn : onesym[o1;o2;e1;hpro;hpre;tgtframe;wjtables;] peach symall
 
 
-rtn: (),/ rtn
 
-rtn: update d
+
+// Normalization
+// up to training, whether to train the residual or train total
+
 
 
 
